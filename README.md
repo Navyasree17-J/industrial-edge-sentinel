@@ -1,3 +1,4 @@
+HEAD
 # ⚡ Industrial Edge Anomaly Sentinel
 
 **A multi-agent AI system for real-time pod resource analysis and cascading failure detection on industrial edge Kubernetes deployments.**
@@ -35,7 +36,7 @@ Built for ABB's accelerator program — targeting industrial IoT edge environmen
 │  │   │                                                     │   │   │
 │  │   │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────┐  │   │   │
 │  │   │  │CPU Agent │ │MEM Agent │ │PVC Agent │ │LOG    │  │   │   │
-│  │   │  │(inference│ │(sensor   │ │(historian│ │Agent  │  │   │   │
+│  │   │  │|inference│ │(sensor   │ │(historian│ │Agent  │  │   │   │
 │  │   │  │ saturat.)│ │ bloat)   │ │ write    │ │(retry │  │   │   │
 │  │   │  │          │ │          │ │ latency) │ │ storms│  │   │   │
 │  │   │  └────┬─────┘ └────┬─────┘ └────┬─────┘ └───┬───┘  │   │   │
@@ -78,7 +79,7 @@ Real anomaly goes undetected — equipment failure
 ```
 
 The Sentinel detects the **causal chain before equipment failure**, surfacing:
-> "Storage stress on historian PVC is propagating upstream — 3 downstream pods show correlated degradation"
+"Storage stress on historian PVC is propagating upstream — 3 downstream pods show correlated degradation"
 
 ---
 
@@ -290,3 +291,7 @@ The system self-limits for edge hardware:
 ## License
 
 MIT — build on this freely for your ABB accelerator submission and beyond.
+
+# industrial-edge-sentinel
+ABB Accelerstor Hackathon
+fc5552ef373c8f99ef723cc0051467e3a35bee2e
