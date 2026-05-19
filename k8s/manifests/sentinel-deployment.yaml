@@ -1,0 +1,121 @@
+---
+# ═══════════════════════════════════════════════════════════════════════════════
+# SENTINEL BACKEND — Multi-agent orchestrator API
+# ═══════════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-backend
+  namespace: sentinel
+  labels:
+    app: sentinel-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sentinel-backend
+  template:
+    metadata:
+      labels:
+        app: sentinel-backend
+    spec:
+      serviceAccountName: sentinel-agent
+      containers:
+        - name: sentinel-backend
+          image: ghcr.io/your-org/sentinel-backend:latest  # Replace with your registry
+          ports:
+            - containerPort: 8000
+          resources:
+            # Edge-optimized: lightweight analysis stack
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          env:
+            - name: PROMETHEUS_URL
+              value: "http://prometheus.monitoring:9090"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: AGENT_POLL_INTERVAL_S
+              value: "15"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentinel-backend
+  namespace: sentinel
+spec:
+  selector:
+    app: sentinel-backend
+  ports:
+    - port: 8000
+      targetPort: 8000
+      nodePort: 30800
+  type: NodePort
+
+---
+# ═══════════════════════════════════════════════════════════════════════════════
+# SENTINEL DASHBOARD — React frontend
+# ═══════════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-dashboard
+  namespace: sentinel
+  labels:
+    app: sentinel-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sentinel-dashboard
+  template:
+    metadata:
+      labels:
+        app: sentinel-dashboard
+    spec:
+      containers:
+        - name: dashboard
+          image: ghcr.io/your-org/sentinel-dashboard:latest  # Replace with your registry
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          env:
+            - name: VITE_API_URL
+              value: "http://sentinel-backend:8000"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentinel-dashboard
+  namespace: sentinel
+spec:
+  selector:
+    app: sentinel-dashboard
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30080
+  type: NodePort

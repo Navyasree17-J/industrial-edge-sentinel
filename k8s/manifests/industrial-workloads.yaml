@@ -1,0 +1,338 @@
+---
+# ═══════════════════════════════════════════════════════════════════════════════
+# HISTORIAN POD — writes time-series data to PVC
+# Root cause node in the cascade failure chain
+# ═══════════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: historian-data-pvc
+  namespace: industrial
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path   # K3s default; change for MicroK8s
+  resources:
+    requests:
+      storage: 20Gi
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: historian
+  namespace: industrial
+  labels:
+    app: historian
+    sentinel.role: historian
+    sentinel.tier: storage
+spec:
+  serviceName: historian
+  replicas: 1
+  selector:
+    matchLabels:
+      app: historian
+  template:
+    metadata:
+      labels:
+        app: historian
+        sentinel.role: historian
+      annotations:
+        # Tells sentinel PVC agent which PVC to monitor for this pod
+        sentinel.io/pvc: historian-data-pvc
+        sentinel.io/criticality: high
+    spec:
+      containers:
+        - name: historian
+          image: timescale/timescaledb:latest-pg16
+          ports:
+            - containerPort: 5432
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "800m"
+              memory: "1Gi"
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: historian-secret
+                  key: password
+            - name: POSTGRES_DB
+              value: timeseries
+            # Tune for high-write workloads
+            - name: POSTGRES_INITDB_ARGS
+              value: "--encoding=UTF8"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: historian-data-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: historian
+  namespace: industrial
+spec:
+  selector:
+    app: historian
+  ports:
+    - port: 5432
+      targetPort: 5432
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: historian-secret
+  namespace: industrial
+type: Opaque
+stringData:
+  password: "sentineldemo2025"   # Change in production!
+
+---
+# ═══════════════════════════════════════════════════════════════════════════════
+# ML INFERENCE POD — runs anomaly detection models on sensor data
+# Downstream from historian; CPU-intensive, queue can overflow
+# ═══════════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-inference
+  namespace: industrial
+  labels:
+    app: ml-inference
+    sentinel.role: ml-inference
+    sentinel.tier: compute
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ml-inference
+  template:
+    metadata:
+      labels:
+        app: ml-inference
+        sentinel.role: ml-inference
+      annotations:
+        sentinel.io/criticality: high
+        sentinel.io/depends-on: historian
+    spec:
+      containers:
+        - name: ml-inference
+          image: python:3.12-slim
+          command:
+            - python
+            - -c
+            - |
+              import time, random, math, os, signal, sys
+              print("ML Inference pod starting — loading anomaly detection model")
+              sys.stdout.flush()
+              queue_size = 0
+              max_queue = 1000
+              signal.signal(signal.SIGTERM, lambda s,f: sys.exit(0))
+              while True:
+                  # Simulate variable inference load
+                  batch = random.randint(16, 64)
+                  queue_size = min(queue_size + random.randint(0, batch), max_queue)
+                  queue_size = max(0, queue_size - random.randint(batch//2, batch))
+                  pct = queue_size / max_queue
+                  if pct > 0.8:
+                      print(f"WARN  Input queue at {pct*100:.0f}% capacity — backpressure from historian", flush=True)
+                  elif pct > 0.5:
+                      print(f"INFO  Processing inference batch size={batch}, queue={queue_size}", flush=True)
+                  time.sleep(1)
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          env:
+            - name: HISTORIAN_URL
+              value: "postgresql://postgres:sentineldemo2025@historian:5432/timeseries"
+            - name: MODEL_BATCH_SIZE
+              value: "32"
+            - name: QUEUE_MAX_SIZE
+              value: "1000"
+          readinessProbe:
+            exec:
+              command: ["python", "-c", "import sys; sys.exit(0)"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-inference
+  namespace: industrial
+spec:
+  selector:
+    app: ml-inference
+  ports:
+    - port: 8080
+      targetPort: 8080
+
+---
+# ═══════════════════════════════════════════════════════════════════════════════
+# SENSOR INGESTION POD — collects from factory floor sensors
+# Downstream from ML inference; memory fills if upstream backs up
+# ═══════════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sensor-ingestion
+  namespace: industrial
+  labels:
+    app: sensor-ingestion
+    sentinel.role: sensor-ingestion
+    sentinel.tier: ingestion
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sensor-ingestion
+  template:
+    metadata:
+      labels:
+        app: sensor-ingestion
+        sentinel.role: sensor-ingestion
+      annotations:
+        sentinel.io/criticality: high
+        sentinel.io/depends-on: ml-inference
+        sentinel.io/sensor-count: "48"
+    spec:
+      containers:
+        - name: sensor-ingestion
+          image: python:3.12-slim
+          command:
+            - python
+            - -c
+            - |
+              import time, random, sys, signal
+              print("Sensor ingestion pod starting — connecting to 48 sensors at 100Hz")
+              sys.stdout.flush()
+              buffer = []
+              max_buffer = 50000
+              signal.signal(signal.SIGTERM, lambda s,f: sys.exit(0))
+              while True:
+                  # Simulate sensor data arrival
+                  incoming = random.randint(80, 120)
+                  processed = random.randint(70, 110)
+                  buffer.extend([0] * incoming)
+                  buffer = buffer[processed:]
+                  if len(buffer) > max_buffer * 0.8:
+                      dropped = random.randint(5, 25)
+                      buffer = buffer[dropped:]
+                      print(f"WARN  Buffer overflow — dropping {dropped} packets from sensor_group_C", flush=True)
+                  elif random.random() < 0.05:
+                      print(f"INFO  Receiving telemetry from 48 sensors, buffer={len(buffer)}", flush=True)
+                  time.sleep(0.01)
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+          env:
+            - name: INFERENCE_URL
+              value: "http://ml-inference:8080"
+            - name: SENSOR_SAMPLE_RATE_HZ
+              value: "100"
+            - name: BUFFER_MAX_BYTES
+              value: "524288000"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sensor-ingestion
+  namespace: industrial
+spec:
+  selector:
+    app: sensor-ingestion
+  ports:
+    - port: 9090
+      targetPort: 9090
+
+---
+# ═══════════════════════════════════════════════════════════════════════════════
+# ALERTING POD — triggers alarms when thresholds crossed
+# Most downstream; fails silently when sensor stream is incomplete
+# ═══════════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alerting
+  namespace: industrial
+  labels:
+    app: alerting
+    sentinel.role: alerting
+    sentinel.tier: alerting
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alerting
+  template:
+    metadata:
+      labels:
+        app: alerting
+        sentinel.role: alerting
+      annotations:
+        sentinel.io/criticality: critical
+        sentinel.io/depends-on: sensor-ingestion,ml-inference
+    spec:
+      containers:
+        - name: alerting
+          image: python:3.12-slim
+          command:
+            - python
+            - -c
+            - |
+              import time, random, sys, signal
+              print("Alerting pod starting — monitoring 24 alert rules")
+              sys.stdout.flush()
+              rules = ["temperature_anomaly","pressure_spike","vibration_critical",
+                       "motor_overheat","conveyor_jam","power_surge"]
+              signal.signal(signal.SIGTERM, lambda s,f: sys.exit(0))
+              while True:
+                  for rule in rules:
+                      completeness = random.uniform(0.6, 1.0)
+                      if completeness < 0.8:
+                          print(f"WARN  Sensor data incomplete — missing sensor_group_C for {rule}", flush=True)
+                      elif completeness < 0.7:
+                          print(f"ERROR Unable to evaluate threshold for {rule} rule", flush=True)
+                  time.sleep(5)
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "512Mi"
+          env:
+            - name: SENSOR_URL
+              value: "http://sensor-ingestion:9090"
+            - name: INFERENCE_URL
+              value: "http://ml-inference:8080"
+            - name: ALERT_WEBHOOK
+              value: "http://alertmanager:9093/api/v1/alerts"

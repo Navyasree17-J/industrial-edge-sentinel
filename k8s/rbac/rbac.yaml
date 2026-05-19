@@ -1,0 +1,71 @@
+---
+# ── Namespaces ────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: industrial
+  labels:
+    app.kubernetes.io/managed-by: sentinel
+    environment: edge
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sentinel
+  labels:
+    app.kubernetes.io/managed-by: sentinel
+
+---
+# ── ServiceAccount ────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sentinel-agent
+  namespace: sentinel
+
+---
+# ── ClusterRole — read-only access to pods, metrics, events ──────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sentinel-reader
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - namespaces
+      - events
+      - persistentvolumeclaims
+      - persistentvolumes
+      - nodes
+      - services
+      - endpoints
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - statefulsets
+      - daemonsets
+      - replicasets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources:
+      - pods
+      - nodes
+    verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sentinel-reader-binding
+subjects:
+  - kind: ServiceAccount
+    name: sentinel-agent
+    namespace: sentinel
+roleRef:
+  kind: ClusterRole
+  name: sentinel-reader
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,133 @@
+version: "3.9"
+
+# ── Industrial Edge Anomaly Sentinel — Full-stack local dev ───────────────────
+# docker compose up -d
+# Dashboard: http://localhost:3000
+# API:       http://localhost:8000/docs
+
+services:
+  # ── Sentinel Backend ─────────────────────────────────────────────────────────
+  sentinel-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    environment:
+      - PROMETHEUS_URL=http://prometheus:9090
+      - LOG_LEVEL=INFO
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - sentinel-net
+
+  # ── Sentinel Dashboard ───────────────────────────────────────────────────────
+  sentinel-dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_API_URL=http://sentinel-backend:8000
+    depends_on:
+      - sentinel-backend
+    networks:
+      - sentinel-net
+
+  # ── Prometheus (pull-based metrics) ─────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.54.0
+    ports:
+      - "9090:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2d
+      - --web.enable-lifecycle
+    volumes:
+      - ./k8s/monitoring/prometheus-local.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - sentinel-net
+
+  # ── Node exporter (disk/net/OS metrics) ─────────────────────────────────────
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+    ports:
+      - "9100:9100"
+    networks:
+      - sentinel-net
+
+  # ── Simulated industrial workloads ───────────────────────────────────────────
+  historian-sim:
+    image: python:3.12-slim
+    command:
+      - python
+      - -c
+      - |
+        import time, random, os, sys
+        print("Historian simulation: writing time-series at 1000 events/s")
+        sys.stdout.flush()
+        while True:
+            lag = random.uniform(0.001, 0.1)  # simulate write latency
+            time.sleep(lag)
+            if lag > 0.05:
+                print(f"WARN  Write latency spike: {lag*1000:.0f}ms", flush=True)
+    networks:
+      - sentinel-net
+
+  ml-inference-sim:
+    image: python:3.12-slim
+    command:
+      - python
+      - -c
+      - |
+        import time, random, sys
+        print("ML Inference simulation: running anomaly detection")
+        sys.stdout.flush()
+        queue = 0
+        while True:
+            queue += random.randint(0, 10)
+            queue = max(0, queue - random.randint(5, 15))
+            if queue > 800:
+                print(f"WARN  Input queue at {queue/10:.0f}% — backpressure", flush=True)
+            time.sleep(0.5)
+    networks:
+      - sentinel-net
+
+  sensor-ingestion-sim:
+    image: python:3.12-slim
+    command:
+      - python
+      - -c
+      - |
+        import time, random, sys
+        print("Sensor ingestion simulation: 48 sensors at 100Hz")
+        sys.stdout.flush()
+        buf = 0
+        while True:
+            buf += random.randint(80, 120)
+            buf = max(0, buf - random.randint(70, 110))
+            if buf > 40000:
+                print(f"WARN  Buffer overflow — dropping {random.randint(5,25)} packets", flush=True)
+                buf = 35000
+            time.sleep(0.01)
+    networks:
+      - sentinel-net
+
+volumes:
+  prometheus-data:
+
+networks:
+  sentinel-net:
+    driver: bridge
